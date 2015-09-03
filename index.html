@@ -1,0 +1,760 @@
+<html>
+
+<head>
+
+    <meta charset="utf-8">
+
+    <link rel="stylesheet" href="css/bootstrap.css">
+    <link rel="stylesheet" href="css/bootstrap-theme.min.css">
+    <link href="http://netdna.bootstrapcdn.com/font-awesome/3.2.1/css/font-awesome.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="css/bootstrap-spinner.css">
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+    <script type="text/javascript" src="js/bootstrap.min.js"></script>
+    <script src="js/jquery.spinner.js"></script>
+    <script type="text/javascript" src="includes/webgl-debug.js"></script>
+    <script type="text/javascript" src="includes/glMatrix.js"></script>
+    <script type="text/javascript" src="includes/webgl_utils.js"></script>
+
+    <script id="shader-vs" type="x-shader/x-vertex">
+        attribute vec3 aVertexPosition;
+        attribute vec3 aVertexNormal;
+        attribute vec2 aTextureCoordinates;
+
+        uniform mat4 uMVMatrix;
+        uniform mat4 uPMatrix;
+        uniform mat3 uNMatrix;
+
+        uniform vec3 uAmbientColor;
+
+        uniform vec3 uPointLightingLocation;
+        uniform vec3 uLightingDirection;
+        uniform vec3 uDirectionalColor;
+
+        uniform bool uUseLighting;
+
+        varying vec2 vTextureCoordinates;
+        varying vec3 vLightWeighting;
+
+        void main() {
+            gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+            vTextureCoordinates = aTextureCoordinates;
+
+            vec3 transformedNormal = uNMatrix * aVertexNormal;
+            float directionalLightWeighting = max(dot(transformedNormal, uLightingDirection), 0.0);
+            vLightWeighting = uAmbientColor + uDirectionalColor * directionalLightWeighting;
+        }
+    </script>
+
+    <script id="shader-fs" type="x-shader/x-fragment">
+        precision mediump float;
+
+        varying vec2 vTextureCoordinates;
+        varying vec3 vLightWeighting;
+
+        uniform sampler2D uSampler;
+
+        void main(void) {
+            vec4 textureColor = texture2D(uSampler, vec2(vTextureCoordinates.s, vTextureCoordinates.t));
+            gl_FragColor = vec4(textureColor.rgb * vLightWeighting, textureColor.a);
+        }
+    </script>
+
+
+    <script type="text/javascript">
+
+        var gl;
+    var pwgl = {}; //Many variables are added to this as properties
+    pwgl.ongoingImageLoads = []; 
+    var canvas;
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext("experimental-webgl");
+            gl.canvasWidth = canvas.width;
+            gl.canvasHeight = canvas.height;
+        } catch (e) {
+        }
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+        }
+    }
+
+
+    function getShader(gl, id) {
+        var shaderScript = document.getElementById(id);
+        if (!shaderScript) {
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+
+    var shaderProgram;
+
+    function initShaders() {
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoordinates");
+        shaderProgram.vertexNormalAttribute = gl.getAttribLocation(shaderProgram, "aVertexNormal");
+        
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+        shaderProgram.nMatrixUniform = gl.getUniformLocation(shaderProgram, "uNMatrix");
+        shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+        shaderProgram.useLightingUniform = gl.getUniformLocation(shaderProgram, "uUseLighting");
+        shaderProgram.ambientColorUniform = gl.getUniformLocation(shaderProgram, "uAmbientColor");
+        shaderProgram.lightingDirectionUniform = gl.getUniformLocation(shaderProgram, "uLightingDirection");
+        shaderProgram.directionalColorUniform = gl.getUniformLocation(shaderProgram, "uDirectionalColor");
+
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+        gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+        gl.enableVertexAttribArray(shaderProgram.vertexNormalAttribute);
+
+    }
+
+    function uploadNormalMatrixToShader() {
+      var normalMatrix = mat3.create();
+      mat4.toInverseMat3(mvMatrix, normalMatrix);
+      mat3.transpose(normalMatrix);
+      gl.uniformMatrix3fv(pwgl.uniformNormalMatrixLoc, false, normalMatrix);
+
+  }
+
+  function uploadModelViewMatrixToShader() {
+      gl.uniformMatrix4fv(pwgl.uniformMVMatrixLoc, false, mvMatrix);
+  }
+
+  function uploadProjectionMatrixToShader() {
+      gl.uniformMatrix4fv(pwgl.uniformProjMatrixLoc, false, pMatrix);
+  }
+
+  function handleTexture(texture) {
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+    gl.generateMipmap(gl.TEXTURE_2D);
+
+    gl.bindTexture(gl.TEXTURE_2D, null);
+}
+
+    var earthTexture;
+    var satelliteTexture;
+
+    function initTexture() {
+        earthTexture = gl.createTexture();
+        earthTexture.image = new Image();
+        earthTexture.image.onload = function () {
+            handleTexture(earthTexture)
+        }
+        earthTexture.image.src = "includes/img/earth.jpg";
+
+        satelliteTexture = gl.createTexture();
+        satelliteTexture.image = new Image();
+        satelliteTexture.image.onload = function () {
+            handleTexture(satelliteTexture)
+        }
+        satelliteTexture.image.src = "includes/img/metal_floor_256.jpg";
+    }
+
+
+var mvMatrix = mat4.create();
+var mvMatrixStack = [];
+var pMatrix = mat4.create();
+
+function mvPushMatrix() {
+    var copy = mat4.create();
+    mat4.set(mvMatrix, copy);
+    mvMatrixStack.push(copy);
+}
+
+function mvPopMatrix() {
+    if (mvMatrixStack.length == 0) {
+        throw "Invalid popMatrix!";
+    }
+    mvMatrix = mvMatrixStack.pop();
+}
+
+function setMatrixUniforms() {
+    gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+    gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+
+    var normalMatrix = mat3.create();
+    mat4.toInverseMat3(mvMatrix, normalMatrix);
+    mat3.transpose(normalMatrix);
+    gl.uniformMatrix3fv(shaderProgram.nMatrixUniform, false, normalMatrix);
+}
+
+function degToRad(degrees) {
+    return degrees * Math.PI / 180;
+}
+
+
+var mouseDown  = false;
+var lastMouseX = null;
+var lastMouseY = null;
+
+var earthRotationMatrix = mat4.create();
+mat4.identity(earthRotationMatrix);
+
+function handleMouseDown(event) {
+    mouseDown = true;
+    lastMouseX = event.clientX;
+    lastMouseY = event.clientY;
+}
+
+
+function handleMouseUp(event) {
+    mouseDown = false;
+}
+
+
+function handleMouseMove(event) {
+    if (!mouseDown) {
+        return;
+    }
+    var newX = event.clientX;
+    var newY = event.clientY;
+
+    var deltaX = newX - lastMouseX
+    var newRotationMatrix = mat4.create();
+    mat4.identity(newRotationMatrix);
+    mat4.rotate(newRotationMatrix, degToRad(deltaX / 10), [0, 1, 0]);
+
+    var deltaY = newY - lastMouseY;
+    mat4.rotate(newRotationMatrix, degToRad(deltaY / 10), [-2, 0, 0]);
+
+    mat4.multiply(newRotationMatrix, earthRotationMatrix, earthRotationMatrix);
+
+    lastMouseX = newX
+    lastMouseY = newY;
+}
+
+
+
+var earthVertexPositionBuffer;
+var earthVertexNormalBuffer;
+var earthVertexTextureCoordBuffer;
+var earthVertexIndexBuffer;
+
+var cubeVertexPositionBuffer;
+var cubeVertexNormalBuffer;
+var cubeVertexTextureCoordBuffer;
+var cubeVertexIndexBuffer;
+
+function initBuffers() {
+
+    //determine the size of the cube
+        cubeVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+        vertices = [
+            // Front face
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+
+            // Back face
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+
+            // Top face
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+
+            // Bottom face
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+
+            // Right face
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+
+            // Left face
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value),
+            -parseFloat(document.getElementById("inputSatelliteSize").value),  
+             parseFloat(document.getElementById("inputSatelliteSize").value), 
+            -parseFloat(document.getElementById("inputSatelliteSize").value)
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        cubeVertexPositionBuffer.itemSize = 3;
+        cubeVertexPositionBuffer.numItems = 24;
+
+        cubeVertexNormalBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
+        var vertexNormals = [
+            // Front face
+             0.0,  0.0,  2.0,
+             0.0,  0.0,  2.0,
+             0.0,  0.0,  2.0,
+             0.0,  0.0,  2.0,
+
+            // Back face
+             0.0,  0.0, -2.0,
+             0.0,  0.0, -2.0,
+             0.0,  0.0, -2.0,
+             0.0,  0.0, -2.0,
+
+            // Top face
+             0.0,  2.0,  0.0,
+             0.0,  2.0,  0.0,
+             0.0,  2.0,  0.0,
+             0.0,  2.0,  0.0,
+
+            // Bottom face
+             0.0, -2.0,  0.0,
+             0.0, -2.0,  0.0,
+             0.0, -2.0,  0.0,
+             0.0, -2.0,  0.0,
+
+            // Right face
+             2.0,  0.0,  0.0,
+             2.0,  0.0,  0.0,
+             2.0,  0.0,  0.0,
+             2.0,  0.0,  0.0,
+
+            // Left face
+            -2.0,  0.0,  0.0,
+            -2.0,  0.0,  0.0,
+            -2.0,  0.0,  0.0,
+            -2.0,  0.0,  0.0,
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexNormals), gl.STATIC_DRAW);
+        cubeVertexNormalBuffer.itemSize = 3;
+        cubeVertexNormalBuffer.numItems = 24;
+
+        cubeVertexTextureCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
+        var textureCoords = [
+            // Front face
+            0.0, 0.0,
+            2.0, 0.0,
+            2.0, 2.0,
+            0.0, 2.0,
+
+            // Back face
+            2.0, 0.0,
+            2.0, 2.0,
+            0.0, 2.0,
+            0.0, 0.0,
+
+            // Top face
+            0.0, 2.0,
+            0.0, 0.0,
+            2.0, 0.0,
+            2.0, 2.0,
+
+            // Bottom face
+            2.0, 2.0,
+            0.0, 2.0,
+            0.0, 0.0,
+            2.0, 0.0,
+
+            // Right face
+            2.0, 0.0,
+            2.0, 2.0,
+            0.0, 2.0,
+            0.0, 0.0,
+
+            // Left face
+            0.0, 0.0,
+            2.0, 0.0,
+            2.0, 2.0,
+            0.0, 2.0,
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+        cubeVertexTextureCoordBuffer.itemSize = 2;
+        cubeVertexTextureCoordBuffer.numItems = 24;
+
+        cubeVertexIndexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+        var cubeVertexIndices = [
+            0, 1, 2,      0, 2, 3,    // Front face
+            4, 5, 6,      4, 6, 7,    // Back face
+            8, 9, 10,     8, 10, 11,  // Top face
+            12, 13, 14,   12, 14, 15, // Bottom face
+            16, 17, 18,   16, 18, 19, // Right face
+            20, 21, 22,   20, 22, 23  // Left face
+        ];
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(cubeVertexIndices), gl.STATIC_DRAW);
+        cubeVertexIndexBuffer.itemSize = 1;
+        cubeVertexIndexBuffer.numItems = 36;
+
+    var latitudeBands = 60;
+    var longitudeBands = 60;
+    var radius = 5;
+
+    var vertexPositionData = [];
+    var normalData = [];
+    var textureCoordData = [];
+    for (var latNumber=0; latNumber <= latitudeBands; latNumber++) {
+        var theta = latNumber * Math.PI / latitudeBands;
+        var sinTheta = Math.sin(theta);
+        var cosTheta = Math.cos(theta);
+
+        for (var longNumber=0; longNumber <= longitudeBands; longNumber++) {
+            var phi = longNumber * 2 * Math.PI / longitudeBands;
+            var sinPhi = Math.sin(phi);
+            var cosPhi = Math.cos(phi);
+
+            var x = cosPhi * sinTheta;
+            var y = cosTheta;
+            var z = sinPhi * sinTheta;
+            var u = 1 - (longNumber / longitudeBands);
+            var v = 1 - (latNumber / latitudeBands);
+
+            normalData.push(x);
+            normalData.push(y);
+            normalData.push(z);
+            textureCoordData.push(u);
+            textureCoordData.push(v);
+            vertexPositionData.push(radius * x);
+            vertexPositionData.push(radius * y);
+            vertexPositionData.push(radius * z);
+        }
+
+    }
+
+    var indexData = [];
+    for (var latNumber=0; latNumber < latitudeBands; latNumber++) {
+        for (var longNumber=0; longNumber < longitudeBands; longNumber++) {
+            var a = (latNumber * (longitudeBands + 1)) + longNumber;
+            var b = a + longitudeBands + 1;
+            indexData.push(a);
+            indexData.push(b);
+            indexData.push(a + 1);
+
+            indexData.push(b);
+            indexData.push(b + 1);
+            indexData.push(a + 1);
+        }
+    }
+
+    earthVertexNormalBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, earthVertexNormalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normalData), gl.STATIC_DRAW);
+    earthVertexNormalBuffer.itemSize = 3;
+    earthVertexNormalBuffer.numItems = normalData.length / 3;
+
+    earthVertexTextureCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, earthVertexTextureCoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordData), gl.STATIC_DRAW);
+    earthVertexTextureCoordBuffer.itemSize = 2;
+    earthVertexTextureCoordBuffer.numItems = textureCoordData.length / 2;
+
+    earthVertexPositionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, earthVertexPositionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPositionData), gl.STATIC_DRAW);
+    earthVertexPositionBuffer.itemSize = 3;
+    earthVertexPositionBuffer.numItems = vertexPositionData.length / 3;
+
+    earthVertexIndexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, earthVertexIndexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indexData), gl.STATIC_DRAW);
+    earthVertexIndexBuffer.itemSize = 1;
+    earthVertexIndexBuffer.numItems = indexData.length;
+}
+
+   var earthAngle = 180;
+    var satelliteAngle = 0;
+
+    function drawScene() {
+        gl.viewport(0, 0, gl.canvasWidth, gl.canvasHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        mat4.perspective(60, gl.canvasWidth / gl.canvasHeight, 0.1, 100.0, pMatrix);
+
+        var lighting = true;
+    gl.uniform1i(shaderProgram.useLightingUniform, lighting);
+    if (lighting) {
+        gl.uniform3f(shaderProgram.ambientColorUniform, parseFloat(document.getElementById("inputBrightness").value), 
+                                                        parseFloat(document.getElementById("inputBrightness").value), 
+                                                        parseFloat(document.getElementById("inputBrightness").value));
+
+        var lightingDirection = [0, -1, -0.3];
+
+        var adjustedLD = vec3.create();
+        vec3.normalize(lightingDirection, adjustedLD);
+        vec3.scale(adjustedLD, -1);
+        gl.uniform3fv(shaderProgram.lightingDirectionUniform, adjustedLD);
+
+        gl.uniform3f(
+            shaderProgram.directionalColorUniform, 0.8, 0.8, 0.8);
+    }
+
+        mat4.identity(mvMatrix);
+
+        mat4.translate(mvMatrix, [0, 0, -20]);
+
+        //build the world
+        mvPushMatrix();
+        mat4.rotate(mvMatrix, degToRad(earthAngle), [0, 4, 0]);
+        mat4.multiply(mvMatrix, earthRotationMatrix);
+        //mat4.translate(mvMatrix, [0, 0, 0]);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, earthTexture);
+        gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, earthVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, earthVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, earthVertexTextureCoordBuffer);
+        gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, earthVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, earthVertexNormalBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, earthVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, earthVertexIndexBuffer);
+        setMatrixUniforms();
+        gl.drawElements(gl.TRIANGLES, earthVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+        mvPopMatrix();
+
+        //build the cube
+        mvPushMatrix();
+        mat4.rotate(mvMatrix, degToRad(satelliteAngle), [0, 4, 0]);
+
+        // array item 0 = 
+        //       item 1 = vertical height
+        //       item 2 = distance from centre
+        mat4.translate(mvMatrix, [5, 0, parseFloat(document.getElementById("inputSatelliteDistance").value)]);
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, cubeVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, cubeVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
+        gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, cubeVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, satelliteTexture);
+        gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+        setMatrixUniforms();
+        gl.drawElements(gl.TRIANGLES, cubeVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+        mvPopMatrix();
+    }
+
+
+var lastTime = 0;
+
+
+
+
+    
+    function animate() {
+        var timeNow = new Date().getTime();
+        if (lastTime != 0) {
+          var elapsed = timeNow - lastTime;
+
+          satelliteAngle += parseFloat(document.getElementById("inputSatelliteSpeed").value) * elapsed;
+          earthAngle += 0.002 * elapsed; 
+      }
+      lastTime = timeNow;
+  }
+
+// code for the rendering loop
+function loop() {
+    requestAnimFrame(loop);
+    drawScene();
+    initBuffers();
+    animate();
+}
+
+function init()
+{
+    pwgl.x = 0.0;
+    pwgl.y = 2.7;
+    pwgl.z = 2.0;
+    pwgl.circleRadius = 10.0;
+    pwgl.angle = 0;
+}
+
+function webGLStart() {
+    var canvas = document.getElementById("canvas");
+
+    init();
+    initGL(canvas);
+    initShaders();
+    initBuffers();
+    initTexture();
+
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.enable(gl.DEPTH_TEST);
+
+    canvas.onmousedown = handleMouseDown;
+    document.onmouseup = handleMouseUp;
+    document.onmousemove = handleMouseMove;
+
+    loop();
+}
+
+</script>
+
+
+</head>
+
+
+<body onload="webGLStart();">
+<div class="container-fluid" style="margin-top: 15px;">
+<div class="col-md-4">
+<div class="panel panel-success">
+  <div class="panel-heading">
+    <h3 class="panel-title">Control panel</h3>
+  </div>
+  <div class="panel-body">
+    <div class="well">
+        <h2>Size of Satellite:</h2>
+        <div class="input-group spinner" data-trigger="spinner">
+          <input type="text" id="inputSatelliteSize" class="form-control" value="0.05" data-rule="satelliteSize" >
+          <div class="input-group-addon">
+            <a href="javascript:;" class="spin-up" data-spin="up"><i class="icon-sort-up"></i></a>
+            <a href="javascript:;" class="spin-down" data-spin="down"><i class="icon-sort-down"></i></a>
+          </div>
+        </div>
+      </div>
+
+      <div class="well">
+        <h2>Distance from Earth:</h2>
+        <div class="input-group spinner" data-trigger="spinner">
+          <input type="text" id="inputSatelliteDistance" class="form-control" value="1" data-rule="quantity" >
+          <div class="input-group-addon">
+            <a href="javascript:;" class="spin-up" data-spin="up"><i class="icon-sort-up"></i></a>
+            <a href="javascript:;" class="spin-down" data-spin="down"><i class="icon-sort-down"></i></a>
+          </div>
+        </div>
+      </div>
+
+<div class="well">
+        <h2>Brightness:</h2>
+        <div class="input-group spinner" data-trigger="spinner">
+          <input type="text" id="inputBrightness" class="form-control" value="1" data-rule="brightness" >
+          <div class="input-group-addon">
+            <a href="javascript:;" class="spin-up" data-spin="up"><i class="icon-sort-up"></i></a>
+            <a href="javascript:;" class="spin-down" data-spin="down"><i class="icon-sort-down"></i></a>
+          </div>
+        </div>
+      </div>
+
+      <div class="well">
+        <h2>Speed of Satellite:</h2>
+        <div class="input-group spinner" data-trigger="spinner">
+          <input type="text" id="inputSatelliteSpeed" class="form-control" value="1" data-rule="satelliteSpeed" >
+          <div class="input-group-addon">
+            <a href="javascript:;" class="spin-up" data-spin="up"><i class="icon-sort-up"></i></a>
+            <a href="javascript:;" class="spin-down" data-spin="down"><i class="icon-sort-down"></i></a>
+          </div>
+        </div>
+      </div>
+
+  </div>
+</div>
+</div>
+<div class="col-md-8">
+
+    <canvas id="canvas" style="border: none;" width="900" height="700"></canvas>
+
+</div>
+</div>
+</body>
+
+</html>
